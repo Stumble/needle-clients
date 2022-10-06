@@ -17,33 +17,24 @@ type txDBExecuter struct {
 	counter        *prometheus.CounterVec
 	histogram      *prometheus.HistogramVec
 	statementMap   *sync.Map
-	invalidateFunc []func()
+	invalidateFunc []InvalidateFunc
 }
 
-func (m *manager) getTxDBExecuter(tx *sql.Tx) *txDBExecuter {
-	exec := &txDBExecuter{
-		tx:           tx,
-		counter:      m.counter,
-		histogram:    m.histogram,
-		statementMap: m.statementMap,
-	}
-	return exec
-}
-
-func (s *txDBExecuter) commit() {
+func (s *txDBExecuter) runInvalidateFuncs() {
 	var wg sync.WaitGroup
 	for _, v := range s.invalidateFunc {
 		wg.Add(1)
-		go func(inval func()) {
+		go func(invalidate InvalidateFunc) {
 			defer wg.Done()
-			inval()
+			// XXX: invalidation errors are silent.
+			_ = invalidate()
 		}(v)
 	}
 	wg.Wait()
 }
 
 // It is not thread-safe and should not be called in concurrent goroutines
-func (s *txDBExecuter) Invalidate(f func()) error {
+func (s *txDBExecuter) Invalidate(f InvalidateFunc) error {
 	s.invalidateFunc = append(s.invalidateFunc, f)
 	return nil
 }
@@ -74,7 +65,8 @@ func (s *txDBExecuter) Query(ctx context.Context, unprepared string, args ...int
 	if s.histogram != nil {
 		startTime := time.Now()
 		defer func() {
-			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(time.Now().Sub(startTime).Seconds())
+			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(
+				time.Since(startTime).Seconds())
 		}()
 	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "SQL TX QUERY")
@@ -95,7 +87,8 @@ func (s *txDBExecuter) Exec(ctx context.Context, unprepared string, args ...inte
 	if s.histogram != nil {
 		startTime := time.Now()
 		defer func() {
-			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(time.Now().Sub(startTime).Seconds())
+			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(
+				time.Since(startTime).Seconds())
 		}()
 	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "SQL TX EXEC")

@@ -12,22 +12,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Manager is an interface to helper functions
+// Manager wraps the underlying *sql.DB	to provide a uniformed interface of getting
+// a simple or transactional SQL executor.
 type Manager interface {
-	CheckStmts(service string, unprepared map[string]string) (map[string]*sql.Stmt, error)
 	Ping() error
-	Close()
+	Close() error
 	GetConn() *sql.DB
 
-	GetDBExecuter() DBExecuter
+	GetExec() DBExecuter
 	Transact(txFunc func(DBExecuter) (interface{}, error)) (resp interface{}, err error)
 }
 
 type manager struct {
-	conn                  *sql.DB
-	gauge                 *prometheus.GaugeVec
-	simpleExecuter        DBExecuter
-	simpleNoCacheExecuter DBExecuter
+	conn  *sql.DB
+	gauge *prometheus.GaugeVec
+	exec  DBExecuter
 
 	counter      *prometheus.CounterVec
 	histogram    *prometheus.HistogramVec
@@ -37,10 +36,6 @@ type manager struct {
 const (
 	updateInterval = time.Second * 1
 )
-
-func newManager(config *Config) (Manager, error) {
-	return newManagerWithMetrics(config, nil, nil, nil)
-}
 
 func newManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, execCounter *prometheus.CounterVec, execHistogram *prometheus.HistogramVec) (Manager, error) {
 	// setup database
@@ -63,13 +58,7 @@ func newManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, execCount
 		counter:      execCounter,
 		histogram:    execHistogram,
 		statementMap: statementMap,
-		simpleExecuter: &simpleDBExecuter{
-			conn:         conn,
-			counter:      execCounter,
-			histogram:    execHistogram,
-			statementMap: statementMap,
-		},
-		simpleNoCacheExecuter: &simpleDBExecuter{
+		exec: &simpleDBExecuter{
 			conn:         conn,
 			counter:      execCounter,
 			histogram:    execHistogram,
@@ -100,6 +89,10 @@ func (m *manager) updateMetrics() {
 	}
 }
 
+func (m *manager) GetExec() DBExecuter {
+	return m.exec
+}
+
 // Transact is a wrapper that wraps around transaction
 func (m *manager) Transact(txFunc func(DBExecuter) (interface{}, error)) (resp interface{}, err error) {
 	tx, e := m.conn.Begin()
@@ -107,20 +100,25 @@ func (m *manager) Transact(txFunc func(DBExecuter) (interface{}, error)) (resp i
 		return nil, e
 	}
 
-	txExec := m.getTxDBExecuter(tx)
+	txExec := &txDBExecuter{
+		tx:           tx,
+		counter:      m.counter,
+		histogram:    m.histogram,
+		statementMap: m.statementMap,
+	}
 
 	defer func() {
 		if p := recover(); p != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			panic(p)
 		} else if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 		} else {
 			e := tx.Commit()
 			if e != nil {
 				err = e
 			} else {
-				txExec.commit()
+				txExec.runInvalidateFuncs()
 			}
 		}
 	}()
@@ -128,8 +126,8 @@ func (m *manager) Transact(txFunc func(DBExecuter) (interface{}, error)) (resp i
 	return resp, err
 }
 
-func (m *manager) Close() {
-	m.conn.Close()
+func (m *manager) Close() error {
+	return m.conn.Close()
 }
 
 func (m *manager) Ping() error {

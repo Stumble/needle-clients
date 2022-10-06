@@ -23,13 +23,8 @@ type simpleDBExecuter struct {
 	statementMap *sync.Map
 }
 
-func (m *manager) GetDBExecuter() DBExecuter {
-	return m.simpleExecuter
-}
-
-func (s *simpleDBExecuter) Invalidate(f func()) error {
-	f()
-	return nil
+func (s *simpleDBExecuter) Invalidate(f InvalidateFunc) error {
+	return f()
 }
 
 func (s *simpleDBExecuter) cleanStatement(statement string) string {
@@ -58,7 +53,8 @@ func (s *simpleDBExecuter) Query(ctx context.Context, unprepared string, args ..
 	if s.histogram != nil {
 		startTime := time.Now()
 		defer func() {
-			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(time.Now().Sub(startTime).Seconds())
+			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(
+				time.Since(startTime).Seconds())
 		}()
 	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "SQL QUERY")
@@ -66,7 +62,6 @@ func (s *simpleDBExecuter) Query(ctx context.Context, unprepared string, args ..
 	tags.PeerService.Set(span, "mysql")
 	span.SetTag("db.statement", unprepared)
 	defer span.Finish()
-	// r, err := s.conn.QueryContext(ctx, unprepared, args...)
 	r, err := s.conn.QueryContext(ctx, unprepared, args...)
 	if err != nil {
 		return r, err
@@ -81,7 +76,8 @@ func (s *simpleDBExecuter) QueryRow(ctx context.Context, unprepared string, args
 	if s.histogram != nil {
 		startTime := time.Now()
 		defer func() {
-			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(time.Now().Sub(startTime).Seconds())
+			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(
+				time.Since(startTime).Seconds())
 		}()
 	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "SQL QUERY")
@@ -90,7 +86,6 @@ func (s *simpleDBExecuter) QueryRow(ctx context.Context, unprepared string, args
 	span.SetTag("db.statement", unprepared)
 	defer span.Finish()
 	return s.conn.QueryRowContext(ctx, unprepared, args...), nil
-	// return prepared.QueryRowContext(ctx, args...)
 }
 
 func (s *simpleDBExecuter) Exec(ctx context.Context, unprepared string, args ...interface{}) (sql.Result, error) {
@@ -100,7 +95,8 @@ func (s *simpleDBExecuter) Exec(ctx context.Context, unprepared string, args ...
 	if s.histogram != nil {
 		startTime := time.Now()
 		defer func() {
-			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(time.Now().Sub(startTime).Seconds())
+			s.histogram.WithLabelValues(s.cleanStatement(unprepared), "QUERY").Observe(
+				time.Since(startTime).Seconds())
 		}()
 	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "SQL EXEC")
@@ -108,7 +104,6 @@ func (s *simpleDBExecuter) Exec(ctx context.Context, unprepared string, args ...
 	tags.PeerService.Set(span, "mysql")
 	span.SetTag("db.statement", unprepared)
 	defer span.Finish()
-	// r, err := prepared.ExecContext(ctx, args...)
 	r, err := s.conn.ExecContext(ctx, unprepared, args...)
 	if err != nil {
 		return r, err
