@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
+	// "reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,7 +55,7 @@ type PassThroughExpireFunc = func() (interface{}, time.Duration, error)
 
 // Cache defines interface to cache
 type Cache interface {
-	// Get returns value of f while caching in redis and inmemcache
+	// Get saves the value into target.
 	// Inputs:
 	// queryKey	 - key used in cache
 	// target	 - receive the cached value, must be pointer
@@ -144,7 +144,10 @@ func NewCache(
 func (c *Client) Close() {
 	if c.pubsub != nil {
 		// todo: handle close
-		c.pubsub.Unsubscribe(c.ctx)
+		err := c.pubsub.Unsubscribe(c.ctx)
+		if err != nil {
+			log.Err(err).Msgf("failed to pubsub.Unsubscribe()")
+		}
 		c.pubsub.Close()
 	}
 	c.cancel()
@@ -154,9 +157,9 @@ func (c *Client) Close() {
 // QueryKey is an alias to string
 type QueryKey = string
 
-type nilPlaceholder struct {
-	SomeRandomFieldToPreventDecoding struct{}
-}
+// type nilPlaceholder struct {
+// 	SomeRandomFieldToPreventDecoding struct{}
+// }
 
 // getNoCache read through using f and populate cache if no error
 func (c *Client) getNoCacheWithValue(ctx context.Context, queryKey QueryKey, f PassThroughExpireFunc, v interface{}, noCache bool) error {
@@ -302,15 +305,15 @@ func ttl(key QueryKey) string {
 	return fmt.Sprintf(":%s%s", store(key), ttlSuffix)
 }
 
-// typedNil cast the ret to the nil pointer of same type if it is a pointer
-func typedNil(target interface{}) interface{} {
-	retReflect := reflect.ValueOf(target)
-	if retReflect.Kind() == reflect.Ptr {
-		value := reflect.New(retReflect.Type())
-		return value.Elem().Interface()
-	}
-	return target
-}
+// // typedNil cast the ret to the nil pointer of same type if it is a pointer
+// func typedNil(target interface{}) interface{} {
+// 	retReflect := reflect.ValueOf(target)
+// 	if retReflect.Kind() == reflect.Ptr {
+// 		value := reflect.New(retReflect.Type())
+// 		return value.Elem().Interface()
+// 	}
+// 	return target
+// }
 
 // Get implements Cache interface
 func (c *Client) Get(ctx context.Context, queryKey QueryKey, target interface{}, expire time.Duration, f PassThroughFunc, noCache bool) error {
@@ -415,7 +418,8 @@ func (c *Client) Set(ctx context.Context, key QueryKey, val interface{}, ttl tim
 	return nil
 }
 
-// marshal copy from https://github.com/go-redis/cache/blob/v8/cache.go#L331 and removed compression
+// marshal @p value into returned bytes.
+// copy from https://github.com/go-redis/cache/blob/v8/cache.go#L331 and removed compression
 func marshal(value interface{}) ([]byte, error) {
 	switch value := value.(type) {
 	case nil:
@@ -434,7 +438,8 @@ func marshal(value interface{}) ([]byte, error) {
 	return b, nil
 }
 
-// unmarshal copy from https://github.com/go-redis/cache/blob/v8/cache.go#L369
+// unmarshal @p b into @p value.
+// copy from https://github.com/go-redis/cache/blob/v8/cache.go#L369
 func unmarshal(b []byte, value interface{}) error {
 	if len(b) == 0 {
 		return nil
@@ -453,5 +458,14 @@ func unmarshal(b []byte, value interface{}) error {
 		return nil
 	}
 
-	return msgpack.Unmarshal(b, value)
+	err := msgpack.Unmarshal(b, value)
+	if err != nil {
+		return err
+	}
+	// msgpack set time.Location to Local, but UTC is preferred: consistent string
+	// representation during JSON marshal for testing.
+	if t, ok := value.(*time.Time); ok {
+		*t = t.UTC()
+	}
+	return nil
 }

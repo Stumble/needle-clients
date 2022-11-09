@@ -643,3 +643,12 @@ func (suite *testSuite) TestInvalidateKeyAcrossPods() {
 	_, e = suite.inMemCache2.Get([]byte(store(queryKey)))
 	suite.Equal(freecache.ErrNotFound, e)
 }
+
+func (suite *testSuite) TestUnmarshalTime() {
+	t := time.Unix(1000, 1000)
+	bytes, err := marshal(t)
+	suite.NoError(err)
+	newTime := &time.Time{}
+	suite.NoError(unmarshal(bytes, newTime))
+	suite.Equal(time.UTC, newTime.Location())
+}
