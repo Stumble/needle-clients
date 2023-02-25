@@ -15,7 +15,7 @@ type metricSet struct {
 }
 
 var (
-	labels        = []string{"name"}
+	labels        = []string{"sql", "name"}
 	latencyBucket = []float64{
 		4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192}
 	connPoolUpdateInterval = 1 * time.Second
@@ -27,7 +27,7 @@ func newMetricSet(appName string) *metricSet {
 			prometheus.GaugeOpts{
 				Name: fmt.Sprintf("%s_mysql_conn_pool", appName),
 				Help: "",
-			}, labels),
+			}, []string{"name"}),
 		Request: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: fmt.Sprintf("%s_mysql_request_total", appName),
