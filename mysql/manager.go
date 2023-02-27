@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
 
@@ -24,20 +23,17 @@ type Manager interface {
 }
 
 type manager struct {
-	conn  *sql.DB
-	gauge *prometheus.GaugeVec
-	exec  DBExecuter
+	conn *sql.DB
+	exec DBExecuter
 
-	counter      *prometheus.CounterVec
-	histogram    *prometheus.HistogramVec
 	statementMap *sync.Map
+	stats        *metricSet
+	wg           sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
-const (
-	updateInterval = time.Second * 1
-)
-
-func newManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, execCounter *prometheus.CounterVec, execHistogram *prometheus.HistogramVec) (Manager, error) {
+func newManagerWithMetrics(config *Config) (Manager, error) {
 	// setup database
 	dsn := fmt.Sprintf("%s:%s@tcp([%s]:%d)/%s?charset=utf8mb4&parseTime=true",
 		config.Username,
@@ -53,21 +49,28 @@ func newManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, execCount
 	conn.SetMaxIdleConns(config.MaxIdleConns)
 	conn.SetConnMaxLifetime(config.MaxLifetime)
 	statementMap := &sync.Map{}
-	manager := &manager{
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	exec := &simpleDBExecuter{
 		conn:         conn,
-		counter:      execCounter,
-		histogram:    execHistogram,
 		statementMap: statementMap,
-		exec: &simpleDBExecuter{
-			conn:         conn,
-			counter:      execCounter,
-			histogram:    execHistogram,
-			statementMap: statementMap,
-		},
 	}
 
-	if gauge != nil {
-		manager.gauge = gauge
+	manager := &manager{
+		conn:         conn,
+		statementMap: statementMap,
+		ctx:          ctx,
+		cancel:       cancel,
+		exec:         exec,
+	}
+
+	if config.EnablePrometheus {
+		manager.stats = newMetricSet(config.AppName)
+		exec.counter = manager.stats.Request
+		exec.histogram = manager.stats.Latency
+		manager.stats.Register()
+		manager.wg.Add(1)
 		go manager.updateMetrics()
 	}
 
@@ -75,17 +78,24 @@ func newManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, execCount
 }
 
 func (m *manager) updateMetrics() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(connPoolUpdateInterval)
+	defer ticker.Stop()
 	for {
+		select {
+		case <-ticker.C:
+		case <-m.ctx.Done():
+			return
+		}
 		stats := m.conn.Stats()
-		m.gauge.WithLabelValues("MaxOpenConnections").Set(float64(stats.MaxOpenConnections))
-		m.gauge.WithLabelValues("Idle").Set(float64(stats.Idle))
-		m.gauge.WithLabelValues("OpenConnections").Set(float64(stats.OpenConnections))
-		m.gauge.WithLabelValues("InUse").Set(float64(stats.InUse))
-		m.gauge.WithLabelValues("WaitCount").Set(float64(stats.WaitCount))
-		m.gauge.WithLabelValues("WaitDuration").Set(float64(stats.WaitDuration))
-		m.gauge.WithLabelValues("MaxIdleClosed").Set(float64(stats.MaxIdleClosed))
-		m.gauge.WithLabelValues("MaxLifetimeClosed").Set(float64(stats.MaxLifetimeClosed))
-		time.Sleep(updateInterval)
+		m.stats.ConnPool.WithLabelValues("MaxOpenConnections").Set(float64(stats.MaxOpenConnections))
+		m.stats.ConnPool.WithLabelValues("Idle").Set(float64(stats.Idle))
+		m.stats.ConnPool.WithLabelValues("OpenConnections").Set(float64(stats.OpenConnections))
+		m.stats.ConnPool.WithLabelValues("InUse").Set(float64(stats.InUse))
+		m.stats.ConnPool.WithLabelValues("WaitCount").Set(float64(stats.WaitCount))
+		m.stats.ConnPool.WithLabelValues("WaitDuration").Set(float64(stats.WaitDuration))
+		m.stats.ConnPool.WithLabelValues("MaxIdleClosed").Set(float64(stats.MaxIdleClosed))
+		m.stats.ConnPool.WithLabelValues("MaxLifetimeClosed").Set(float64(stats.MaxLifetimeClosed))
 	}
 }
 
@@ -102,8 +112,8 @@ func (m *manager) Transact(txFunc func(DBExecuter) (interface{}, error)) (resp i
 
 	txExec := &txDBExecuter{
 		tx:           tx,
-		counter:      m.counter,
-		histogram:    m.histogram,
+		counter:      m.stats.Request,
+		histogram:    m.stats.Latency,
 		statementMap: m.statementMap,
 	}
 
@@ -127,7 +137,17 @@ func (m *manager) Transact(txFunc func(DBExecuter) (interface{}, error)) (resp i
 }
 
 func (m *manager) Close() error {
-	return m.conn.Close()
+	m.cancel()
+	m.wg.Wait()
+	if m.stats != nil {
+		m.stats.Unregister()
+	}
+
+	err := m.conn.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *manager) Ping() error {

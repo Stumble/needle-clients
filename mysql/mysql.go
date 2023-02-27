@@ -7,23 +7,25 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/kelseyhightower/envconfig"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
 
 const (
 	HighQPSMaxOpenConns = 100
+	AppNameLengthMax    = 32
 )
 
 type Config struct {
-	Username     string        `default:"root"`
-	Password     string        `default:"my-secret"`
-	Host         string        `default:"localhost"`
-	Port         int           `default:"3306"`
-	DBName       string        `default:"test_db"`
-	MaxOpenConns int           `default:"10"`
-	MaxIdleConns int           `default:"10"`
-	MaxLifetime  time.Duration `default:"60s"`
+	Username         string        `default:"root"`
+	Password         string        `default:"my-secret"`
+	Host             string        `default:"localhost"`
+	Port             int           `default:"3306"`
+	DBName           string        `default:"test_db"`
+	MaxOpenConns     int           `default:"10"`
+	MaxIdleConns     int           `default:"10"`
+	MaxLifetime      time.Duration `default:"60s"`
+	AppName          string        `default:""`
+	EnablePrometheus bool          `default:"true"`
 }
 
 func (c *Config) String() string {
@@ -33,6 +35,13 @@ func (c *Config) String() string {
 	copy := *c
 	copy.Password = "*hidden*"
 	return fmt.Sprintf("%+v", copy)
+}
+
+func (c *Config) Valid() error {
+	if len(c.AppName) == 0 || len(c.AppName) > AppNameLengthMax {
+		return fmt.Errorf("invalid AppName: %s", c)
+	}
+	return nil
 }
 
 func ConfigFromEnv() *Config {
@@ -54,10 +63,10 @@ func RawMysqlConn(config *Config) (*sql.DB, error) {
 }
 
 func NewMysqlManager(config *Config) (Manager, error) {
-	return NewMysqlManagerWithMetrics(config, nil, nil, nil)
+	return NewMysqlManagerWithMetrics(config)
 }
 
-func NewMysqlManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, execCounter *prometheus.CounterVec, execHistogram *prometheus.HistogramVec) (Manager, error) {
+func NewMysqlManagerWithMetrics(config *Config) (Manager, error) {
 	if config == nil {
 		config = ConfigFromEnv()
 	}
@@ -66,7 +75,10 @@ func NewMysqlManagerWithMetrics(config *Config, gauge *prometheus.GaugeVec, exec
 			"MysqlManager Config has MaxOpenConns = %d,"+
 				"which may be too low to handle high QPS.", config.MaxOpenConns)
 	}
-	manager, err := newManagerWithMetrics(config, gauge, execCounter, execHistogram)
+	if err := config.Valid(); err != nil {
+		return nil, err
+	}
+	manager, err := newManagerWithMetrics(config)
 	if err != nil {
 		return nil, err
 	}
