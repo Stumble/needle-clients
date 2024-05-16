@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/coocood/freecache"
-	redis "github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
+	redis "github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	uuid "github.com/satori/go.uuid"
 	"github.com/vmihailenco/msgpack/v5"

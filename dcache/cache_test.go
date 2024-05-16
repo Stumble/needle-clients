@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coocood/freecache"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"github.com/vmihailenco/msgpack/v5"
